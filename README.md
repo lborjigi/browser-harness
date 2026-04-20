@@ -34,13 +34,6 @@ When this page appears, tick the checkbox so the agent can connect to your brows
 
 See [domain-skills/](domain-skills/) for example tasks.
 
-## Free remote browsers
-
-Useful for sub-agents or deployment. **Free tier: 3 concurrent browsers, no card required.**
-
-- Grab a key at [cloud.browser-use.com/new-api-key](https://cloud.browser-use.com/new-api-key)
-- Or let the agent sign up itself via [docs.browser-use.com/llms.txt](https://docs.browser-use.com/llms.txt) (setup flow + challenge context included).
-
 ## How simple is it? (~592 lines of Python)
 
 - `install.md` — first-time install and browser bootstrap

@@ -2,5 +2,25 @@ __pycache__/
 *.pyc
 *.log
 .env
+.env.*
+!.env.example
 uv.lock
 *.egg-info/
+
+# Secrets / credentials
+*.pem
+*.key
+*.p12
+*.pfx
+credentials.json
+token.json
+secrets.json
+
+# Screenshots and temp data that may contain sensitive content
+/tmp/
+*.heapsnapshot
+shot.png
+
+# OS artifacts
+.DS_Store
+Thumbs.db

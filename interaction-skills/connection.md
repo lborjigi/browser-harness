@@ -16,9 +16,7 @@ The daemon's `attach_first_page()` handles this by creating an `about:blank` tab
 
 ```python
 if not daemon_alive():
-    import os
-    for f in ["/tmp/bu-default.sock", "/tmp/bu-default.pid"]:
-        if os.path.exists(f): os.unlink(f)
+    restart_daemon()
     ensure_daemon()
 
 tabs = list_tabs()

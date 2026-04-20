@@ -1,5 +1,5 @@
 """CDP WS holder + Unix socket relay. One daemon per BU_NAME."""
-import asyncio, json, os, socket, sys, time, urllib.request
+import asyncio, json, os, re, socket, sys, time
 from collections import deque
 from pathlib import Path
 
@@ -20,10 +20,29 @@ def _load_env():
 
 _load_env()
 
-NAME = os.environ.get("BU_NAME", "default")
-SOCK = f"/tmp/bu-{NAME}.sock"
-LOG = f"/tmp/bu-{NAME}.log"
-PID = f"/tmp/bu-{NAME}.pid"
+_SAFE_NAME = re.compile(r"^[a-zA-Z0-9_\-]{1,64}$")
+
+def _validate_name(name):
+    if not _SAFE_NAME.match(name):
+        raise ValueError(f"BU_NAME must be alphanumeric/dash/underscore, 1-64 chars, got: {name!r}")
+    return name
+
+def _runtime_dir():
+    """Private runtime directory for sockets/pids/logs (mode 0o700)."""
+    d = Path(os.environ.get("XDG_RUNTIME_DIR", f"/tmp/browser-harness-{os.getuid()}"))
+    d.mkdir(mode=0o700, exist_ok=True)
+    actual = d.stat()
+    if actual.st_uid != os.getuid():
+        raise RuntimeError(f"Runtime dir {d} owned by uid {actual.st_uid}, expected {os.getuid()}")
+    if actual.st_mode & 0o077:
+        os.chmod(d, 0o700)
+    return d
+
+NAME = _validate_name(os.environ.get("BU_NAME", "default"))
+_RD = _runtime_dir()
+SOCK = str(_RD / f"bu-{NAME}.sock")
+LOG = str(_RD / f"bu-{NAME}.log")
+PID = str(_RD / f"bu-{NAME}.pid")
 BUF = 500
 PROFILES = [
     Path.home() / "Library/Application Support/Google/Chrome",
@@ -45,18 +64,20 @@ PROFILES = [
     Path.home() / "AppData/Local/Microsoft/Edge SxS/User Data",
 ]
 INTERNAL = ("chrome://", "chrome-untrusted://", "devtools://", "chrome-extension://", "about:")
-BU_API = "https://api.browser-use.com/api/v3"
-REMOTE_ID = os.environ.get("BU_BROWSER_ID")
-API_KEY = os.environ.get("BROWSER_USE_API_KEY")
 
 
 def log(msg):
-    open(LOG, "a").write(f"{msg}\n")
+    fd = os.open(LOG, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    os.write(fd, f"{msg}\n".encode())
+    os.close(fd)
 
 
 def get_ws_url():
-    if url := os.environ.get("BU_CDP_WS"):
-        return url
+    if os.environ.get("BU_CDP_WS"):
+        raise RuntimeError(
+            "BU_CDP_WS is disabled — this harness only connects to local Chrome. "
+            "Remote/cloud browser connections have been removed for security."
+        )
     for base in PROFILES:
         try:
             port, path = (base / "DevToolsActivePort").read_text().strip().split("\n", 1)
@@ -78,22 +99,8 @@ def get_ws_url():
             finally:
                 probe.close()
         return f"ws://127.0.0.1:{port.strip()}{path.strip()}"
-    raise RuntimeError(f"DevToolsActivePort not found in {[str(p) for p in PROFILES]} — enable chrome://inspect/#remote-debugging, or set BU_CDP_WS for a remote browser")
+    raise RuntimeError(f"DevToolsActivePort not found in {[str(p) for p in PROFILES]} — enable chrome://inspect/#remote-debugging")
 
-
-def stop_remote():
-    if not REMOTE_ID or not API_KEY: return
-    try:
-        req = urllib.request.Request(
-            f"{BU_API}/browsers/{REMOTE_ID}",
-            data=json.dumps({"action": "stop"}).encode(),
-            method="PATCH",
-            headers={"X-Browser-Use-API-Key": API_KEY, "Content-Type": "application/json"},
-        )
-        urllib.request.urlopen(req, timeout=15).read()
-        log(f"stopped remote browser {REMOTE_ID}")
-    except Exception as e:
-        log(f"stop_remote failed ({REMOTE_ID}): {e}")
 
 
 def is_real_page(t):
@@ -210,7 +217,7 @@ async def serve(d):
 
     server = await asyncio.start_unix_server(handler, path=SOCK)
     os.chmod(SOCK, 0o600)
-    log(f"listening on {SOCK} (name={NAME}, remote={REMOTE_ID or 'local'})")
+    log(f"listening on {SOCK} (name={NAME}, local-only)")
     async with server:
         await d.stop.wait()
 
@@ -233,8 +240,11 @@ if __name__ == "__main__":
     if already_running():
         print(f"daemon already running on {SOCK}", file=sys.stderr)
         sys.exit(0)
-    open(LOG, "w").close()
-    open(PID, "w").write(str(os.getpid()))
+    fd = os.open(LOG, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.close(fd)
+    fd = os.open(PID, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.write(fd, str(os.getpid()).encode())
+    os.close(fd)
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
@@ -243,6 +253,5 @@ if __name__ == "__main__":
         log(f"fatal: {e}")
         sys.exit(1)
     finally:
-        stop_remote()
         try: os.unlink(PID)
         except FileNotFoundError: pass

@@ -1,5 +1,5 @@
 """Browser control via CDP. Read, edit, extend -- this file is yours."""
-import base64, json, os, socket, time, urllib.request
+import base64, ipaddress, json, os, re, socket, time, urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -18,9 +18,54 @@ def _load_env():
 
 _load_env()
 
-NAME = os.environ.get("BU_NAME", "default")
-SOCK = f"/tmp/bu-{NAME}.sock"
+_SAFE_NAME = re.compile(r"^[a-zA-Z0-9_\-]{1,64}$")
+
+def _validate_name(name):
+    if not _SAFE_NAME.match(name):
+        raise ValueError(f"BU_NAME must be alphanumeric/dash/underscore, 1-64 chars, got: {name!r}")
+    return name
+
+def _runtime_dir():
+    """Private runtime directory (mode 0o700), matching daemon.py."""
+    d = Path(os.environ.get("XDG_RUNTIME_DIR", f"/tmp/browser-harness-{os.getuid()}"))
+    d.mkdir(mode=0o700, exist_ok=True)
+    return d
+
+NAME = _validate_name(os.environ.get("BU_NAME", "default"))
+SOCK = str(_runtime_dir() / f"bu-{NAME}.sock")
 INTERNAL = ("chrome://", "chrome-untrusted://", "devtools://", "chrome-extension://", "about:")
+
+_BLOCKED_NETS = [
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("169.254.0.0/16"),      # link-local / cloud metadata
+    ipaddress.ip_network("100.64.0.0/10"),       # CGNAT / Tailscale
+    ipaddress.ip_network("::1/128"),
+    ipaddress.ip_network("fc00::/7"),            # ULA
+    ipaddress.ip_network("fe80::/10"),           # link-local v6
+]
+
+def _is_private_url(url):
+    """Return True if URL resolves to a private/internal IP (SSRF protection)."""
+    parsed = urlparse(url)
+    host = parsed.hostname
+    if not host:
+        return True
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        addrs = socket.getaddrinfo(host, None)
+        for _, _, _, _, sockaddr in addrs:
+            try:
+                addr = ipaddress.ip_address(sockaddr[0])
+                if any(addr in net for net in _BLOCKED_NETS):
+                    return True
+            except ValueError:
+                continue
+        return False
+    return any(addr in net for net in _BLOCKED_NETS)
 
 
 def _send(req):
@@ -98,9 +143,13 @@ def scroll(x, y, dy=-300, dx=0):
 
 
 # --- visual ---
-def screenshot(path="/tmp/shot.png", full=False):
+def screenshot(path=None, full=False):
+    if path is None:
+        path = str(_runtime_dir() / "shot.png")
     r = cdp("Page.captureScreenshot", format="png", captureBeyondViewport=full)
-    open(path, "wb").write(base64.b64decode(r["data"]))
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.write(fd, base64.b64decode(r["data"]))
+    os.close(fd)
     return path
 
 
@@ -205,9 +254,13 @@ def upload_file(selector, path):
     if not nid: raise RuntimeError(f"no element for {selector}")
     cdp("DOM.setFileInputFiles", files=[path] if isinstance(path, str) else list(path), nodeId=nid)
 
-def http_get(url, headers=None, timeout=20.0):
-    """Pure HTTP — no browser. Use for static pages / APIs. Wrap in ThreadPoolExecutor for bulk."""
-    import urllib.request, gzip
+def http_get(url, headers=None, timeout=20.0, allow_private=False):
+    """Pure HTTP — no browser. Use for static pages / APIs. Wrap in ThreadPoolExecutor for bulk.
+    Blocks requests to private/internal IPs by default (SSRF protection).
+    Pass allow_private=True only for intentional local requests."""
+    import gzip
+    if not allow_private and _is_private_url(url):
+        raise RuntimeError(f"http_get blocked: {url} resolves to a private/internal address")
     h = {"User-Agent": "Mozilla/5.0", "Accept-Encoding": "gzip"}
     if headers: h.update(headers)
     with urllib.request.urlopen(urllib.request.Request(url, headers=h), timeout=timeout) as r:

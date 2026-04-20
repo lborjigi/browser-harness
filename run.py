@@ -1,27 +1,20 @@
 import sys
 
-from admin import (
-    ensure_daemon,
-    list_cloud_profiles,
-    list_local_profiles,
-    restart_daemon,
-    start_remote_daemon,
-    stop_remote_daemon,
-    sync_local_profile,
-)
+from admin import ensure_daemon, restart_daemon
 from helpers import *
 
-HELP = """Browser Harness
+HELP = """Browser Harness (local-only)
 
 Read SKILL.md for the default workflow and examples.
 
 Typical usage:
-  uv run bh <<'PY'
+  browser-harness <<'PY'
   ensure_real_tab()
   print(page_info())
   PY
 
-Helpers are pre-imported. The daemon auto-starts and connects to the running browser.
+Helpers are pre-imported. The daemon auto-starts and connects to your local Chrome.
+Cloud/remote browser features have been removed for security.
 """
 
 

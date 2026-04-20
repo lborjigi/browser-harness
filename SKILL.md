@@ -40,29 +40,6 @@ PY
 
 `run.py` calls `ensure_daemon()` before `exec` — you never start/stop manually unless you want to.
 
-### Remote browsers
-
-Use remote for **parallel sub-agents** (each gets its own isolated browser via a distinct `BU_NAME`) or on a headless server. `BROWSER_USE_API_KEY` must be set. `start_remote_daemon`, `list_cloud_profiles`, `list_local_profiles`, `sync_local_profile` are pre-imported.
-
-```bash
-browser-harness <<'PY'
-start_remote_daemon("work")                               # default — clean browser, no profile
-# start_remote_daemon("work", profileName="my-work")      # reuse a cloud profile (already logged in)
-# start_remote_daemon("work", profileId="<uuid>")         # same, but by UUID
-# start_remote_daemon("work", proxyCountryCode="de", timeout=120)   # DE proxy, 2-hour timeout
-# start_remote_daemon("work", proxyCountryCode=None)      # disable the Browser Use proxy
-PY
-
-BU_NAME=work browser-harness <<'PY'
-new_tab("https://example.com")
-print(page_info())
-PY
-```
-
-`start_remote_daemon` prints `liveUrl` and auto-opens it in the local browser (if a GUI is detected) so the user can watch along. Headless servers print only — share the URL with the user. The daemon `PATCH`es the cloud browser to `stop` on shutdown, which persists profile state. Running remote daemons bill until timeout.
-
-Profiles (cookies-only login state) live in `interaction-skills/profile-sync.md` — covers `list_cloud_profiles()`, the chat-driven "which profile?" pattern, and `sync_local_profile()` for uploading a local Chrome profile.
-
 ## Search first
 
 After cloning the repo, search `domain-skills/` first for the domain you are working on before inventing a new approach.
@@ -77,7 +54,6 @@ Only if you start struggling with a specific mechanic while navigating, look in 
 - `iframes.md`
 - `network-requests.md`
 - `print-as-pdf.md`
-- `profile-sync.md`
 - `screenshots.md`
 - `scrolling.md`
 - `shadow-dom.md`
@@ -148,15 +124,14 @@ The *durable* shape of the site — the map, not the diary. Focus on what the ne
 ## Architecture
 
 ```text
-Chrome / Browser Use cloud -> CDP WS -> daemon.py -> /tmp/bu-<NAME>.sock -> run.py
+Chrome -> CDP WS -> daemon.py -> $RUNTIME_DIR/bu-<NAME>.sock -> run.py
 ```
 
 - Protocol is one JSON line each way.
 - Requests are `{method, params, session_id}` for CDP or `{meta: ...}` for daemon control.
 - Responses are `{result}` / `{error}` / `{events}` / `{session_id}`.
 - `BU_NAME` namespaces socket, pid, and log files.
-- `BU_CDP_WS` overrides local Chrome discovery for remote browsers.
-- `BU_BROWSER_ID` + `BROWSER_USE_API_KEY` lets the daemon stop a Browser Use cloud browser on shutdown.
+- Runtime files live in `$XDG_RUNTIME_DIR` (or `/tmp/browser-harness-<UID>/`), mode 0o700.
 
 ## Gotchas (field-tested)
 
@@ -176,10 +151,7 @@ Chrome / Browser Use cloud -> CDP WS -> daemon.py -> /tmp/bu-<NAME>.sock -> run.
   `restart_daemon()`
   `PY`
   before assuming setup is wrong.
-- **If `restart_daemon()` also hangs**, kill Chrome entirely (`pkill -9 -f "Google Chrome"`), clean sockets (`rm -f /tmp/bu-default.sock /tmp/bu-default.pid`), reopen Chrome (`open -a "Google Chrome"`), wait 5s, then reconnect. This resets all CDP state.
-- **Browser Use API is camelCase on the wire.** `cdpUrl`, `proxyCountryCode`, etc.
-- **Remote `cdpUrl` is HTTPS, not ws.** Resolve the websocket URL via `/json/version`.
-- **Stop cloud browsers with `PATCH /browsers/{id}` + `{\"action\":\"stop\"}`.**
+- **If `restart_daemon()` also hangs**, kill Chrome entirely (`pkill -9 -f "Google Chrome"`), clean the runtime dir sockets (`rm -f $XDG_RUNTIME_DIR/bu-default.sock $XDG_RUNTIME_DIR/bu-default.pid` or the `/tmp/browser-harness-<UID>/` equivalent), reopen Chrome (`open -a "Google Chrome"`), wait 5s, then reconnect. This resets all CDP state.
 - **After every meaningful action, re-screenshot before assuming it worked.** Use the image to verify changed state, open menus, navigation, visible errors, and whether the page is in the state you expected.
 - **Use screenshots to drive exploration.** They are often the fastest way to find the next click target, notice hidden blockers, and decide if a selector is even worth writing.
 - **Prefer compositor-level actions over framework hacks.** Try screenshots, coordinate clicks, and raw key input before adding DOM-specific workarounds.
